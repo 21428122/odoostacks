@@ -1,0 +1,37 @@
+[project]
+name = "odoostack"
+version = "0.1.0"
+description = "A gstack-style toolkit for finding and shipping Odoo apps"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27.0",
+    "selectolax>=0.3.21",
+    "duckdb>=1.0.0",
+    "click>=8.1.7",
+    "rich>=13.7.0",
+    "tenacity>=8.5.0",
+    "tomli>=2.0.0; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.6.0",
+]
+
+[project.scripts]
+odoostack-scrape = "scripts.scrape_odoo:main"
+odoostack-load   = "scripts.load:main"
+odoostack-score  = "scripts.score:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["scripts"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

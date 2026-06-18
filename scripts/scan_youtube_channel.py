@@ -1,0 +1,195 @@
+"""Scan a YouTube channel's videos for theme analysis.
+
+Uses yt-dlp to pull video metadata (titles, view counts, durations, dates).
+No API key needed. Saves raw JSON + themed markdown extract.
+
+Usage:
+    python -m scripts.scan_youtube_channel https://www.youtube.com/@odoo-it-yourself
+    python -m scripts.scan_youtube_channel https://www.youtube.com/@n8n-io --top 100
+    python -m scripts.scan_youtube_channel <url> --output briefs/youtube/<channel>.md
+"""
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+from collections import Counter
+from pathlib import Path
+from urllib.parse import urlparse
+
+import click
+
+DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "youtube"
+
+# Stopwords for keyword extraction in titles
+STOPWORDS = {
+    "the", "a", "an", "and", "or", "for", "to", "in", "on", "of", "by", "with",
+    "is", "are", "was", "were", "be", "been", "being", "have", "has", "had",
+    "do", "does", "did", "will", "would", "could", "should", "may", "might",
+    "this", "that", "these", "those", "i", "you", "he", "she", "it", "we", "they",
+    "my", "your", "his", "her", "its", "our", "their", "from", "as", "at", "but",
+    "if", "then", "else", "than", "so", "too", "very", "just", "also", "only",
+    "how", "what", "when", "where", "why", "who", "which", "whose", "whom",
+    "tutorial", "video", "watch", "subscribe", "channel", "youtube", "shorts",
+    "ep", "episode", "part", "free", "demo", "review", "vs", "best", "top",
+    "new", "all", "more", "less", "every", "no", "yes", "not", "make", "made",
+    "use", "using", "used", "one", "two", "three", "first", "second", "third",
+}
+
+
+def fetch_channel_videos(url: str, top: int) -> list[dict]:
+    """Use yt-dlp to dump channel video metadata as JSON. Fast — flat playlist mode."""
+    cmd = [
+        "yt-dlp",
+        "--flat-playlist",
+        "--print", "%(title)s\t%(id)s\t%(view_count)s\t%(duration)s\t%(upload_date)s",
+        "--playlist-end", str(top),
+        url,
+    ]
+    print(f"Running: {' '.join(cmd)}")
+    proc = subprocess.run(
+        cmd, capture_output=True, text=True, timeout=300,
+        encoding="utf-8", errors="replace",
+    )
+    if proc.returncode != 0:
+        print(f"yt-dlp stderr: {(proc.stderr or '')[:1000]}")
+        return []
+    if not proc.stdout:
+        return []
+
+    videos = []
+    for line in proc.stdout.strip().split("\n"):
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) < 5:
+            continue
+        title, vid_id, views, duration, upload = parts[:5]
+        try:
+            views = int(views) if views and views != "NA" else 0
+        except ValueError:
+            views = 0
+        try:
+            duration = int(float(duration)) if duration and duration != "NA" else 0
+        except ValueError:
+            duration = 0
+        videos.append({
+            "title": title,
+            "id": vid_id,
+            "views": views,
+            "duration_s": duration,
+            "upload_date": upload,
+            "url": f"https://www.youtube.com/watch?v={vid_id}",
+        })
+    return videos
+
+
+def extract_keywords(titles: list[str], min_count: int = 2) -> list[tuple[str, int]]:
+    """Extract single-word + bigram themes from titles."""
+    unigrams = Counter()
+    bigrams = Counter()
+    for t in titles:
+        words = [w.lower() for w in re.findall(r"[a-zA-Z][a-zA-Z0-9]+", t)]
+        clean = [w for w in words if w not in STOPWORDS and len(w) > 2]
+        for w in clean:
+            unigrams[w] += 1
+        for i in range(len(clean) - 1):
+            bg = f"{clean[i]} {clean[i+1]}"
+            bigrams[bg] += 1
+    combined = unigrams.most_common(40) + [(b, c) for b, c in bigrams.most_common(40) if c >= min_count]
+    combined.sort(key=lambda x: -x[1])
+    return [(k, v) for k, v in combined if v >= min_count][:50]
+
+
+def extract_xtoy_patterns(titles: list[str]) -> list[tuple[str, str, int]]:
+    """For Pabbly/n8n: find 'X to Y' automation patterns in titles."""
+    pat = re.compile(r"\b([A-Z][a-zA-Z0-9.]+)\s+(?:to|-->|->|→|with|and)\s+([A-Z][a-zA-Z0-9.]+)\b")
+    pairs = Counter()
+    for t in titles:
+        for m in pat.finditer(t):
+            a, b = m.group(1), m.group(2)
+            # filter out generic words that pass capitalization
+            if a.lower() in STOPWORDS or b.lower() in STOPWORDS:
+                continue
+            if len(a) < 3 or len(b) < 3:
+                continue
+            pairs[(a, b)] += 1
+    return [(a, b, c) for (a, b), c in pairs.most_common(30)]
+
+
+def render_markdown(channel_name: str, videos: list[dict], keywords, xtoy) -> str:
+    if not videos:
+        return f"# {channel_name}\n\n_no videos retrieved_\n"
+
+    total_views = sum(v["views"] for v in videos)
+    avg_duration = sum(v["duration_s"] for v in videos) / len(videos) if videos else 0
+
+    out = [f"# YouTube channel scan — {channel_name}\n"]
+    out.append(f"_Generated by yt-dlp + scripts/scan_youtube_channel.py — no LLM, no API key._\n")
+    out.append(f"\n## Channel summary\n")
+    out.append(f"- **Videos retrieved:** {len(videos):,}")
+    out.append(f"- **Total views (sum across retrieved videos):** {total_views:,}")
+    out.append(f"- **Average duration:** {avg_duration/60:.1f} minutes")
+    dates = [v["upload_date"] for v in videos if v.get("upload_date") and v["upload_date"] != "NA"]
+    if dates:
+        out.append(f"- **Date range:** {min(dates)} → {max(dates)}")
+
+    out.append(f"\n## Top 30 videos by view count\n")
+    out.append("| Views | Date | Duration | Title | Link |")
+    out.append("|---|---|---|---|---|")
+    sorted_videos = sorted(videos, key=lambda v: -v["views"])[:30]
+    for v in sorted_videos:
+        dur_min = v["duration_s"] // 60 if v["duration_s"] else 0
+        date = v["upload_date"][:8] if v["upload_date"] and v["upload_date"] != "NA" else "—"
+        out.append(f"| {v['views']:,} | {date} | {dur_min}m | {v['title'][:80]} | [yt]({v['url']}) |")
+
+    if keywords:
+        out.append(f"\n## Recurring themes (top keywords + bigrams from titles)\n")
+        out.append("| Term | Count |")
+        out.append("|---|---|")
+        for k, c in keywords[:30]:
+            out.append(f"| {k} | {c} |")
+
+    if xtoy:
+        out.append(f"\n## Detected 'X to Y' automation patterns\n")
+        out.append("Each row is a recurring 'integrate X with Y' tutorial pattern. ")
+        out.append("**These are productizable as Odoo modules** — every X→Y title represents demand for a one-click connector.\n")
+        out.append("| Source (X) | Target (Y) | Tutorial count |")
+        out.append("|---|---|---|")
+        for a, b, c in xtoy:
+            out.append(f"| {a} | {b} | {c} |")
+
+    return "\n".join(out) + "\n"
+
+
+@click.command()
+@click.argument("url")
+@click.option("--top", default=200, show_default=True, help="Max videos to fetch")
+@click.option("--output", default=None, help="Save markdown to path")
+def main(url: str, top: int, output: str | None):
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    parsed = urlparse(url)
+    handle = parsed.path.strip("/").replace("@", "").replace("/videos", "")
+    save_path = DATA_DIR / f"{handle}.json"
+
+    videos = fetch_channel_videos(url, top)
+    if not videos:
+        print("No videos retrieved. Check URL and yt-dlp install.")
+        return
+
+    save_path.write_text(json.dumps(videos, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"Saved {len(videos)} videos -> {save_path}")
+
+    titles = [v["title"] for v in videos]
+    keywords = extract_keywords(titles)
+    xtoy = extract_xtoy_patterns(titles)
+
+    md = render_markdown(handle, videos, keywords, xtoy)
+    if output:
+        Path(output).parent.mkdir(parents=True, exist_ok=True)
+        Path(output).write_text(md, encoding="utf-8")
+        print(f"Markdown summary -> {output}")
+
+
+if __name__ == "__main__":
+    main()

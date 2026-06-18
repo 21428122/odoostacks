@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Local data (regenerable)
+data/odoo.duckdb.wal
+data/cache/
+data/snapshots/
+data/*.OLD
+.odoostack/secrets.toml
+.odoostack/config.toml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+.gstack/
