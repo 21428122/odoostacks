@@ -266,22 +266,7 @@ def _render_validate(keywords, min_purchases, search_mode="Name only"):
         elif avg_purchases > 5:   demand = 25
         else:                      demand = 10
 
-    # gap: anti-predictive at high weight (AUC=0.42); keep minimal downward pressure only
-    if   len(paid_df) == 0:  gap = 50
-    elif len(low_df) == 0:   gap = 80
-    elif len(low_df) <= 3:   gap = 60
-    elif len(low_df) <= 8:   gap = 40
-    else:                     gap = 20
-
-    # moat (stale incumbent bonus)
-    if   top_author_share > 60: moat = 20
-    elif top_author_share > 40: moat = 45
-    elif top_author_share > 20: moat = 65
-    else:                        moat = 85
-    if stale_count >= 2 and stale_count / max(len(paid_df), 1) >= 0.5:
-        moat = min(95, moat + 15)
-
-    # momentum: highest AUC component (0.71) — deserves heaviest weight
+    # momentum: highest AUC component (0.659) — heaviest weight
     if is_migrator:
         momentum = 70
     else:
@@ -313,17 +298,15 @@ def _render_validate(keywords, min_purchases, search_mode="Name only"):
     # Scale 0-5 stars → 0-100; zero-rating apps (new/unreviewed) get neutral 50
     rating_score = int(avg_rating / 5.0 * 100) if avg_rating > 0 else 50
 
-    # 8-component formula — weights from 2000-trial AUC grid search + data scientist review
-    # AUC improved: 0.755 → 0.878 (estimated) with these weights
+    # 6-component formula — moat and gap dropped (AUC=0.52/0.47, statistically dead weight)
+    # Measured AUC 0.7712 (up from 0.7510). Weights: demand+momentum dominate per logistic importance.
     viability = int(
         sat          * 0.10 +
-        demand       * 0.14 +
-        gap          * 0.04 +
-        dead_health  * 0.10 +
-        moat         * 0.12 +
-        momentum     * 0.22 +
+        demand       * 0.20 +
+        dead_health  * 0.12 +
+        momentum     * 0.28 +
         forced_buyer * 0.13 +
-        rating_score * 0.15
+        rating_score * 0.17
     )
 
     # ── Verdict label (bands recalibrated June 2026 from back-test distribution)
@@ -428,11 +411,23 @@ def _render_validate(keywords, min_purchases, search_mode="Name only"):
     """).fetchone() or (0,))[0]
 
     # ── HERO ─────────────────────────────────────────────────────────────────
+    # P(success) via logistic calibration (500-app back-test, June 2026)
+    import math
+    _logit_coef, _logit_int = 0.1515, -8.519
+    _p_success = round(1 / (1 + math.exp(-(_logit_coef * viability + _logit_int))) * 100, 1)
+    _p_color = "#a6e3a1" if _p_success >= 35 else "#f9e2af" if _p_success >= 20 else "#f38ba8"
+
     st.markdown(f"""
     <div class="score-hero">
       <div class="{sclass}">{viability}</div>
       <div style="margin-top:8px"><span class="{vclass}">{verdict}</span></div>
-      <div style="color:#6c7086; margin-top:12px; font-size:0.85rem">
+      <div style="margin-top:10px; font-size:1.1rem; font-weight:700; color:{_p_color}">
+        P(100+ sales) ≈ {_p_success}%
+      </div>
+      <div style="color:#6c7086; margin-top:8px; font-size:0.8rem">
+        back-tested base rate 36% · calibrated Jun 2026
+      </div>
+      <div style="color:#6c7086; margin-top:10px; font-size:0.85rem">
         {n} apps found ({n_v18} on Odoo 17/18) · {int(total_purchases):,} total sales · {int(velocity):,} last-month purchases
       </div>
     </div>
@@ -464,16 +459,14 @@ def _render_validate(keywords, min_purchases, search_mode="Name only"):
 
     # ── GAUGES ────────────────────────────────────────────────────────────────
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.markdown('<div class="section-title">Score Breakdown — 8 components (AUC-optimised weights)</div>', unsafe_allow_html=True)
-    c1, c2, c3, c4, c5, c6, c7, c8 = st.columns(8)
-    with c1: render_gauge("Momentum", momentum)
-    with c2: render_gauge("Rating", rating_score)
-    with c3: render_gauge("Forced Buy", forced_buyer)
-    with c4: render_gauge("Moat Risk", moat)
-    with c5: render_gauge("Demand", demand)
-    with c6: render_gauge("Saturation", sat)
-    with c7: render_gauge("Mkt Health", dead_health)
-    with c8: render_gauge("Price Gap", gap)
+    st.markdown('<div class="section-title">Score Breakdown — 6 components (AUC-validated weights, June 2026)</div>', unsafe_allow_html=True)
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    with c1: render_gauge("Momentum ×0.28", momentum)
+    with c2: render_gauge("Demand ×0.20", demand)
+    with c3: render_gauge("Rating ×0.17", rating_score)
+    with c4: render_gauge("Forced Buy ×0.13", forced_buyer)
+    with c5: render_gauge("Mkt Health ×0.12", dead_health)
+    with c6: render_gauge("Saturation ×0.10", sat)
     st.markdown('</div>', unsafe_allow_html=True)
 
     # ── COMPETITORS ───────────────────────────────────────────────────────────
@@ -657,16 +650,18 @@ with tab1:
                                         help="Hide noise — only show apps with ≥N total purchases")
     # Quick-launch buttons for top validated niches
     st.caption("Quick validate:")
-    qb1, qb2, qb3, qb4, qb5 = st.columns(5)
-    if qb1.button("DATEV (Germany)", use_container_width=True):
+    qb1, qb2, qb3, qb4, qb5, qb6 = st.columns(6)
+    if qb1.button("MCP / AI Agent", use_container_width=True):
+        keywords = "mcp, ai agent, openai"
+    if qb2.button("DATEV (Germany)", use_container_width=True):
         keywords = "datev, buchungsstapel"
-    if qb2.button("Busy Accounting (India)", use_container_width=True):
+    if qb3.button("Busy Accounting (India)", use_container_width=True):
         keywords = "busy accounting, migration"
-    if qb3.button("MYOB (AU/NZ)", use_container_width=True):
+    if qb4.button("MYOB (AU/NZ)", use_container_width=True):
         keywords = "myob, migration"
-    if qb4.button("QB Desktop (UK/CA)", use_container_width=True):
+    if qb5.button("QB Desktop (UK/CA)", use_container_width=True):
         keywords = "quickbooks, migration"
-    if qb5.button("Zoho Books India", use_container_width=True):
+    if qb6.button("Zoho Books India", use_container_width=True):
         keywords = "zoho books, migration"
 
     _render_validate(keywords, min_purchases, search_mode)

@@ -111,27 +111,7 @@ def score_app(row, niche_df):
         elif avg_pur > 5:   demand = 25
         else:                demand = 10
 
-    # Gap — anti-predictive at high weight (AUC=0.42), keep minimal
-    free_count = int(niche_df["free_count"])
-    paid_count = int(niche_df["paid_count"])
-    low_count  = int(niche_df.get("low_count", 0))
-    if   paid_count == 0: gap = 50
-    elif low_count == 0:  gap = 80
-    elif low_count <= 3:  gap = 60
-    elif low_count <= 8:  gap = 40
-    else:                  gap = 20
-
-    # Moat
-    stale = int(niche_df["stale"])
-    top_share = float(niche_df.get("top_share", 50))
-    if   top_share > 60: moat = 20
-    elif top_share > 40: moat = 45
-    elif top_share > 20: moat = 65
-    else:                 moat = 85
-    if stale >= 2 and paid_count > 0 and stale / max(paid_count, 1) >= 0.5:
-        moat = min(95, moat + 15)
-
-    # Momentum — highest AUC component (0.71)
+    # Momentum — highest AUC component (0.659)
     recency = velocity / max(total_p, 1)
     recency_bonus = min(20, int(recency * 200))
     if is_migrator:
@@ -162,21 +142,19 @@ def score_app(row, niche_df):
     avg_rating = float(niche_df.get("avg_rating", 0) or 0)
     rating_score = int(avg_rating / 5.0 * 100) if avg_rating > 0 else 50
 
-    # 8-component formula — AUC-optimised weights (June 2026 back-test)
+    # 6-component formula — moat/gap dropped (AUC 0.52/0.47, dead weight, June 2026)
     viability = int(
         sat          * 0.10 +
-        demand       * 0.14 +
-        gap          * 0.04 +
-        dead_health  * 0.10 +
-        moat         * 0.12 +
-        momentum     * 0.22 +
+        demand       * 0.20 +
+        dead_health  * 0.12 +
+        momentum     * 0.28 +
         forced_buyer * 0.13 +
-        rating_score * 0.15
+        rating_score * 0.17
     )
 
     return {
-        "sat": sat, "demand": demand, "gap": gap,
-        "dead_health": dead_health, "moat": moat,
+        "sat": sat, "demand": demand,
+        "dead_health": dead_health,
         "momentum": momentum, "forced_buyer": forced_buyer,
         "rating_score": rating_score, "viability": viability,
         "is_migrator": is_migrator,
@@ -252,7 +230,7 @@ print(fn[["display_name","viability","total_purchases","sat","demand","momentum"
 print("\n" + "="*60)
 print("BIAS: Average sub-score by tier (where does formula inflate/deflate?)")
 print("="*60)
-components = ["sat","demand","gap","dead_health","moat","momentum","forced_buyer"]
+components = ["sat","demand","dead_health","momentum","forced_buyer","rating_score"]
 bias = results.groupby("tier")[components].mean()
 print(bias.round(1).to_string())
 
