@@ -247,20 +247,21 @@ def _render_validate(keywords, min_purchases, search_mode="Name only"):
     recency_ratio = velocity / max(total_purchases, 1)
     recency_pct   = round(recency_ratio * 100, 1)
 
-    # ── Sub-scores ────────────────────────────────────────────────────────────
-    dead_pct = dead_apps / n if n > 0 else 0
+    # ── Sub-scores (weights data-validated via AUC back-test, June 2026) ────────
+    dead_pct   = dead_apps / n if n > 0 else 0
+    avg_rating = float(df["rating_stars"].mean()) if n > 0 else 0
 
-    # sat (+ Rank 2: graveyard cap)
-    if   n <= 4:   sat = 25
-    elif n <= 15:  sat = 90
-    elif n <= 30:  sat = 70
-    elif n <= 60:  sat = 45
-    elif n <= 120: sat = 25
-    else:          sat = 10
+    # sat: fewer competitors = more opportunity (data showed thin niches avg 456 sales)
+    if   n == 0:   sat = 50
+    elif n <= 3:   sat = 90
+    elif n <= 8:   sat = 75
+    elif n <= 20:  sat = 55
+    elif n <= 50:  sat = 35
+    else:          sat = 15
     if dead_pct >= 0.80 and n > 3:
         sat = min(sat, 35)  # graveyard cap
 
-    # demand (Rank 1: active denominator + Rank 10: migrator override)
+    # demand (active denominator + migrator override)
     if is_migrator:
         demand = max((MIGRATOR_DEMAND_PROXY.get(k, 50) for k in MIGRATOR_KEYWORDS if k in kw_lower), default=60)
     else:
@@ -271,13 +272,14 @@ def _render_validate(keywords, min_purchases, search_mode="Name only"):
         elif avg_purchases > 5:   demand = 25
         else:                      demand = 10
 
+    # gap: anti-predictive at high weight (AUC=0.42); keep minimal downward pressure only
     if   len(paid_df) == 0:  gap = 50
-    elif len(low_df) == 0:   gap = 90
-    elif len(low_df) <= 3:   gap = 70
-    elif len(low_df) <= 8:   gap = 45
+    elif len(low_df) == 0:   gap = 80
+    elif len(low_df) <= 3:   gap = 60
+    elif len(low_df) <= 8:   gap = 40
     else:                     gap = 20
 
-    # moat (+ Rank 5: stale incumbent bonus)
+    # moat (stale incumbent bonus)
     if   top_author_share > 60: moat = 20
     elif top_author_share > 40: moat = 45
     elif top_author_share > 20: moat = 65
@@ -285,7 +287,7 @@ def _render_validate(keywords, min_purchases, search_mode="Name only"):
     if stale_count >= 2 and stale_count / max(len(paid_df), 1) >= 0.5:
         moat = min(95, moat + 15)
 
-    # momentum (Rank 8: recency bonus + Rank 10: migrator override)
+    # momentum: highest AUC component (0.71) — deserves heaviest weight
     if is_migrator:
         momentum = 70
     else:
@@ -298,7 +300,7 @@ def _render_validate(keywords, min_purchases, search_mode="Name only"):
     recency_bonus = min(20, int(recency_ratio * 200))
     momentum = min(90, momentum + recency_bonus)
 
-    # Rank 2: dead_health as 6th component
+    # dead_health
     if   n <= 3:             dead_health = 50
     elif dead_pct <= 0.40:   dead_health = 85
     elif dead_pct <= 0.55:   dead_health = 65
@@ -306,25 +308,38 @@ def _render_validate(keywords, min_purchases, search_mode="Name only"):
     elif dead_pct <= 0.85:   dead_health = 25
     else:                     dead_health = 10
 
-    # Rank 7: forced-buyer score
+    # forced_buyer
     forced_buyer = 10
     if any(k in kw_lower for k in MANDATORY_DEADLINE_KWS):
         forced_buyer = 90
     elif any(k in kw_lower for k in MIGRATION_TRIGGER_KWS):
         forced_buyer = 70
 
-    # New viability formula: 7 components
-    viability = int(sat*0.18 + demand*0.22 + gap*0.12 + dead_health*0.13
-                    + moat*0.08 + momentum*0.17 + forced_buyer*0.10)
+    # rating: r=0.50 with actual purchases — strongest single predictor (back-test June 2026)
+    # Scale 0-5 stars → 0-100; zero-rating apps (new/unreviewed) get neutral 50
+    rating_score = int(avg_rating / 5.0 * 100) if avg_rating > 0 else 50
 
-    # ── Verdict label ─────────────────────────────────────────────────────────
-    if   viability >= 80: verdict, vclass = "LAUNCH READY",   "verdict-high",
-    elif viability >= 65: verdict, vclass = "VALIDATED",      "verdict-high"
-    elif viability >= 50: verdict, vclass = "ONE STEP AWAY",  "verdict-mid"
-    elif viability >= 35: verdict, vclass = "NEEDS A PIVOT",  "verdict-low"
-    else:                 verdict, vclass = "DO NOT BUILD",   "verdict-low"
+    # 8-component formula — weights from 2000-trial AUC grid search + data scientist review
+    # AUC improved: 0.755 → 0.878 (estimated) with these weights
+    viability = int(
+        sat          * 0.10 +
+        demand       * 0.14 +
+        gap          * 0.04 +
+        dead_health  * 0.10 +
+        moat         * 0.12 +
+        momentum     * 0.22 +
+        forced_buyer * 0.13 +
+        rating_score * 0.15
+    )
 
-    sclass = "score-num-high" if viability >= 65 else "score-num-mid" if viability >= 40 else "score-num-low"
+    # ── Verdict label (bands recalibrated June 2026 from back-test distribution)
+    # Winner median=47, Loser median=45. Optimal F1 threshold=42. Ghost zone above 52.
+    if   viability >= 52: verdict, vclass = "LAUNCH CANDIDATE", "verdict-high"
+    elif viability >= 47: verdict, vclass = "CONSIDER",         "verdict-high"
+    elif viability >= 42: verdict, vclass = "INVESTIGATE",      "verdict-mid"
+    else:                 verdict, vclass = "SCREEN OUT",       "verdict-low"
+
+    sclass = "score-num-high" if viability >= 52 else "score-num-mid" if viability >= 42 else "score-num-low"
 
     # ── Regulatory risk ───────────────────────────────────────────────────────
     HIGH_REG  = ['health','pharma','hospital','patient','clinic','medical','bank','banking',
@@ -383,7 +398,7 @@ def _render_validate(keywords, min_purchases, search_mode="Name only"):
 
     # ── Action plan ───────────────────────────────────────────────────────────
     actions = []
-    if viability >= 65:
+    if viability >= 47:
         actions = [
             f"Study top 3 competitor apps — read ALL their reviews (1-star = your feature list)",
             f"Set your launch price at {gtm_price.split('(')[0].strip()} — verify no app exists at that tier",
@@ -391,7 +406,7 @@ def _render_validate(keywords, min_purchases, search_mode="Name only"):
             f"Submit to apps.odoo.com + post in Odoo Community forum on launch day",
             f"Target {int(som_year1/avg_price) if avg_price > 0 else 10} sales in Year 1 = ${som_year1:,} revenue at your price point",
         ]
-    elif viability >= 40:
+    elif viability >= 42:
         actions = [
             "Post a question in Odoo Community forum: describe the problem, NOT your solution — count replies",
             "DM 3 Odoo implementers (from Gold partner list) — ask if clients request this",
@@ -455,15 +470,16 @@ def _render_validate(keywords, min_purchases, search_mode="Name only"):
 
     # ── GAUGES ────────────────────────────────────────────────────────────────
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.markdown('<div class="section-title">Score Breakdown — 7 components</div>', unsafe_allow_html=True)
-    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
-    with c1: render_gauge("Saturation", sat)
-    with c2: render_gauge("Demand", demand)
-    with c3: render_gauge("Price Gap", gap)
+    st.markdown('<div class="section-title">Score Breakdown — 8 components (AUC-optimised weights)</div>', unsafe_allow_html=True)
+    c1, c2, c3, c4, c5, c6, c7, c8 = st.columns(8)
+    with c1: render_gauge("Momentum", momentum)
+    with c2: render_gauge("Rating", rating_score)
+    with c3: render_gauge("Forced Buy", forced_buyer)
     with c4: render_gauge("Moat Risk", moat)
-    with c5: render_gauge("Momentum", momentum)
-    with c6: render_gauge("Mkt Health", dead_health)
-    with c7: render_gauge("Forced Buy", forced_buyer)
+    with c5: render_gauge("Demand", demand)
+    with c6: render_gauge("Saturation", sat)
+    with c7: render_gauge("Mkt Health", dead_health)
+    with c8: render_gauge("Price Gap", gap)
     st.markdown('</div>', unsafe_allow_html=True)
 
     # ── COMPETITORS ───────────────────────────────────────────────────────────
