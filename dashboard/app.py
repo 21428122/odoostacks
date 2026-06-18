@@ -109,12 +109,6 @@ def get_conn():
     return duckdb.connect(str(DB_PATH), read_only=True)
 
 
-def score_color(v):
-    if v >= 70:
-        return "score-high"
-    if v >= 40:
-        return "score-mid"
-    return "score-low"
 
 
 def render_gauge(label, value, help_text=""):
@@ -386,7 +380,7 @@ def _render_validate(keywords, min_purchases, search_mode="Name only"):
         pivots.append(("Validate Demand First", "Low purchase count despite competition. Survey Odoo forum + r/Odoo before writing code."))
     if dead_apps / n > 0.6:
         pivots.append(("Quality Gap", f"{dead_apps}/{n} apps have ZERO sales ever. Market exists but most builders failed — execution is the moat."))
-    if sat == 25 and n <= 4:
+    if n <= 3 and momentum < 30:
         pivots.append(("Blue Ocean", "Almost no competition — but also little proof of demand. Do 5 customer interviews before writing code."))
     if stale_count >= 2:
         pivots.append(("Attack Window", f"{stale_count} paid app(s) with {stranded_buyers:,} total buyers show 0 sales this month. Ship a v18 replacement — these are your warm launch leads."))
@@ -547,7 +541,7 @@ def _render_validate(keywords, min_purchases, search_mode="Name only"):
 
     # ── PIVOTS ────────────────────────────────────────────────────────────────
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.markdown('<div class="section-title">3 Pivot Directions</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Strategic Directions</div>', unsafe_allow_html=True)
     for i, (title, body) in enumerate(pivots, 1):
         st.markdown(
             f'<div class="pivot-box" style="color:#cdd6f4">'

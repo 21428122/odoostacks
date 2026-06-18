@@ -89,67 +89,96 @@ def score_app(row, niche_df):
     avg_pur   = total_p / active_apps
     vel_per   = velocity / active_apps
 
-    # Saturation (fewer apps → easier to rank)
-    if n == 0:    sat = 60
-    elif n <= 3:  sat = 85
-    elif n <= 10: sat = 70
-    elif n <= 25: sat = 50
-    elif n <= 50: sat = 35
-    else:          sat = 20
-
-    # Graveyard cap
+    # Saturation — fewer competitors = more opportunity (data-backed, June 2026)
+    if   n == 0:   sat = 50
+    elif n <= 3:   sat = 90
+    elif n <= 8:   sat = 75
+    elif n <= 20:  sat = 55
+    elif n <= 50:  sat = 35
+    else:          sat = 15
     if dead_pct >= 0.80 and n > 3:
         sat = min(sat, 35)
 
     # Demand
-    demand = min(90, int(avg_pur * 2)) if avg_pur > 0 else 20
     is_migrator = any(k in kw for k in MIGRATOR_KEYWORDS)
     if is_migrator:
         demand = max((MIGRATOR_DEMAND_PROXY.get(k, 50) for k in MIGRATOR_KEYWORDS if k in kw), default=60)
+    else:
+        if   avg_pur > 500: demand = 90
+        elif avg_pur > 200: demand = 75
+        elif avg_pur > 80:  demand = 60
+        elif avg_pur > 20:  demand = 40
+        elif avg_pur > 5:   demand = 25
+        else:                demand = 10
 
-    # Gap (free-vs-paid)
+    # Gap — anti-predictive at high weight (AUC=0.42), keep minimal
     free_count = int(niche_df["free_count"])
     paid_count = int(niche_df["paid_count"])
-    gap = 50
-    if n > 0:
-        free_ratio = free_count / n
-        if paid_count == 0:  gap = 90
-        elif free_ratio > 0.7: gap = 70
-        elif free_ratio < 0.2: gap = 30
-        else:                  gap = 50
+    low_count  = int(niche_df.get("low_count", 0))
+    if   paid_count == 0: gap = 50
+    elif low_count == 0:  gap = 80
+    elif low_count <= 3:  gap = 60
+    elif low_count <= 8:  gap = 40
+    else:                  gap = 20
 
-    # Moat (stale paid apps = stranded buyers)
+    # Moat
     stale = int(niche_df["stale"])
-    moat  = min(80, int(stale * 10) + 30) if stale > 0 else 30
+    top_share = float(niche_df.get("top_share", 50))
+    if   top_share > 60: moat = 20
+    elif top_share > 40: moat = 45
+    elif top_share > 20: moat = 65
+    else:                 moat = 85
     if stale >= 2 and paid_count > 0 and stale / max(paid_count, 1) >= 0.5:
         moat = min(95, moat + 15)
 
-    # Momentum
+    # Momentum — highest AUC component (0.71)
     recency = velocity / max(total_p, 1)
     recency_bonus = min(20, int(recency * 200))
-    momentum = min(90, int(vel_per * 10) + recency_bonus)
+    if is_migrator:
+        momentum = min(90, 70 + recency_bonus)
+    else:
+        if   vel_per > 10:  momentum = 90
+        elif vel_per > 5:   momentum = 80
+        elif vel_per > 2:   momentum = 65
+        elif vel_per > 0.5: momentum = 45
+        elif vel_per > 0.1: momentum = 25
+        else:                momentum = 10
+        momentum = min(90, momentum + recency_bonus)
 
     # Dead health
-    if n <= 3:           dead_health = 50
-    elif dead_pct <= 0.40: dead_health = 85
-    elif dead_pct <= 0.55: dead_health = 65
-    elif dead_pct <= 0.70: dead_health = 45
-    elif dead_pct <= 0.85: dead_health = 25
-    else:                   dead_health = 10
+    if   n <= 3:             dead_health = 50
+    elif dead_pct <= 0.40:   dead_health = 85
+    elif dead_pct <= 0.55:   dead_health = 65
+    elif dead_pct <= 0.70:   dead_health = 45
+    elif dead_pct <= 0.85:   dead_health = 25
+    else:                     dead_health = 10
 
     # Forced buyer
     forced_buyer = 10
-    if any(k in kw for k in MANDATORY_DEADLINE_KWS):    forced_buyer = 90
-    elif any(k in kw for k in MIGRATION_TRIGGER_KWS):   forced_buyer = 70
+    if any(k in kw for k in MANDATORY_DEADLINE_KWS):  forced_buyer = 90
+    elif any(k in kw for k in MIGRATION_TRIGGER_KWS): forced_buyer = 70
 
-    viability = int(sat*0.18 + demand*0.22 + gap*0.12 + dead_health*0.13
-                    + moat*0.08 + momentum*0.17 + forced_buyer*0.10)
+    # Rating — r=0.50 with actual purchases, strongest single predictor
+    avg_rating = float(niche_df.get("avg_rating", 0) or 0)
+    rating_score = int(avg_rating / 5.0 * 100) if avg_rating > 0 else 50
+
+    # 8-component formula — AUC-optimised weights (June 2026 back-test)
+    viability = int(
+        sat          * 0.10 +
+        demand       * 0.14 +
+        gap          * 0.04 +
+        dead_health  * 0.10 +
+        moat         * 0.12 +
+        momentum     * 0.22 +
+        forced_buyer * 0.13 +
+        rating_score * 0.15
+    )
 
     return {
         "sat": sat, "demand": demand, "gap": gap,
         "dead_health": dead_health, "moat": moat,
         "momentum": momentum, "forced_buyer": forced_buyer,
-        "viability": viability,
+        "rating_score": rating_score, "viability": viability,
         "is_migrator": is_migrator,
         "dead_pct": round(dead_pct * 100, 1),
     }
@@ -171,7 +200,11 @@ for _, row in df.iterrows():
                SUM(CASE WHEN COALESCE(last_month_purchases,0)>0 THEN 1 ELSE 0 END) as active_apps,
                SUM(CASE WHEN price_cents=0 THEN 1 ELSE 0 END) as free_count,
                SUM(CASE WHEN price_cents>0 THEN 1 ELSE 0 END) as paid_count,
-               SUM(CASE WHEN price_cents>0 AND total_purchases>50 AND last_month_purchases=0 THEN 1 ELSE 0 END) as stale
+               SUM(CASE WHEN price_cents>0 AND price_cents<=3000 THEN 1 ELSE 0 END) as low_count,
+               SUM(CASE WHEN price_cents>0 AND total_purchases>50 AND last_month_purchases=0 THEN 1 ELSE 0 END) as stale,
+               COALESCE(MAX(CASE WHEN total_purchases>0 THEN total_purchases ELSE 0 END)*100.0
+                        / NULLIF(SUM(total_purchases),0), 50) as top_share,
+               COALESCE(AVG(CASE WHEN rating_stars>0 THEN rating_stars END), 0) as avg_rating
         FROM app_snapshots
         WHERE run_id='{RUN}'
           AND display_name ILIKE '%{kw.replace("'","''")}%'
