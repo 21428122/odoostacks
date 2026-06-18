@@ -105,7 +105,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-@st.cache_resource
 def get_conn():
     return duckdb.connect(str(DB_PATH), read_only=True)
 
@@ -184,12 +183,12 @@ def _render_validate(keywords, min_purchases, search_mode="Name only"):
 
     # Show summary-only matches in expander when in precise mode
     if "Name only" in search_mode:
-        df_broad_n = conn.execute(f"""
+        df_broad_n = (conn.execute(f"""
             SELECT COUNT(*) FROM app_snapshots
             WHERE run_id = '{LATEST_RUN}' AND ({summ_conds})
               AND NOT ({name_conds})
               AND COALESCE(total_purchases,0) >= {int(min_purchases)}
-        """).fetchone()[0]
+        """).fetchone() or (0,))[0]
         if df_broad_n > 0:
             with st.expander(f"Also found in summaries (not counted in score): {df_broad_n} apps mention this keyword as a feature"):
                 df_broad = conn.execute(f"""
@@ -414,10 +413,10 @@ def _render_validate(keywords, min_purchases, search_mode="Name only"):
     # ════════════════════════════════════════════════════════════════════════
 
     # Rank 6: Odoo v17/18 secondary count
-    n_v18 = conn.execute(f"""
+    n_v18 = (conn.execute(f"""
         SELECT COUNT(*) FROM app_snapshots s JOIN apps a ON a.app_key = s.app_key
         WHERE s.run_id = '{LATEST_RUN}' AND ({filter_conds}) AND a.version IN ('17.0','18.0')
-    """).fetchone()[0]
+    """).fetchone() or (0,))[0]
 
     # ── HERO ─────────────────────────────────────────────────────────────────
     st.markdown(f"""
@@ -714,7 +713,7 @@ with tab2:
                        COALESCE(AVG(CASE WHEN price_cents>0 THEN price_cents/100.0 END),0) as avg_p,
                        SUM(CASE WHEN COALESCE(total_purchases,0)=0 THEN 1 ELSE 0 END) as dead
                 FROM app_snapshots WHERE run_id='{LATEST_RUN}' AND ({cond})
-            """).fetchone()
+            """).fetchone() or (0, 0, 0, 0, 0)
             apps, sales, lmo, avg_p, dead = r
             avg_p = avg_p or 0
             dead_pct   = round(dead / apps * 100, 1) if apps > 0 else 0
@@ -834,7 +833,7 @@ with tab2:
                    COALESCE(SUM(last_month_purchases),0) as velocity
             FROM app_snapshots
             WHERE run_id = '{LATEST_RUN}' AND ({cond})
-            """).fetchone()
+            """).fetchone() or (0, 0, 0)
             rows.append({"Niche": label, "Apps": r[0], "Total Sales": r[1], "Last Month": r[2]})
 
         niche_df = pd.DataFrame(rows).sort_values("Total Sales", ascending=True)
@@ -862,7 +861,7 @@ with tab2:
                COALESCE(AVG(price_cents)/100.0, 0) as avg_price
         FROM app_snapshots
         WHERE run_id = '{LATEST_RUN}' AND ({cond}) AND price_cents > 0
-        """).fetchone()
+        """).fetchone() or (0, 0, 0, 0)
         cnt, sales, vel, avg_price = r
         demand_per_app = sales / cnt if cnt > 0 else 0
         vel_per_app    = round(vel / cnt, 2) if cnt > 0 else 0
@@ -1222,7 +1221,7 @@ with tab5:
                        COALESCE(SUM(last_month_purchases),0)
                 FROM app_snapshots
                 WHERE run_id = '{LATEST_RUN}' AND ({cond})
-            """).fetchone()
+            """).fetchone() or (0, 0, 0)
             apps, sales, last_mo = row
             signal = "🔴 ZERO" if apps == 0 else "🟡 THIN" if apps <= 3 else "🟢 OK" if apps <= 15 else "⚪ CROWDED"
             # Rank 9: installed-base TAM from static lookup
